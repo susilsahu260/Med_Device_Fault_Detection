@@ -1,3 +1,4 @@
+import pathlib
 """Client library and resilient demo fallback provider for the Ventilator Dashboard.
 
 Provides communication with the FastAPI backend (GET /health, POST /predict,
@@ -89,6 +90,27 @@ class VentilatorDashboardClient:
                 "device_model_VENT-X200",
             ],
             "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+
+    def _local_keras_predict(self, device_id: str, clean_readings: list) -> dict:
+        import json, joblib, pandas as pd, tensorflow as tf
+        if not hasattr(self, "_keras_model"):
+            self._keras_model = tf.keras.models.load_model("artifacts/best_lstm_model.keras")
+            self._meta = json.loads(open("artifacts/metadata.json", encoding="utf-8").read())
+            self._scaler = joblib.load("artifacts/scaler.joblib") if pathlib.Path("artifacts/scaler.joblib").exists() else None
+        feats = self._meta["feature_columns"]
+        df = pd.DataFrame(clean_readings)[feats].astype("float32")
+        X = df.values
+        if self._scaler is not None:
+            X = self._scaler.transform(X)
+        prob = float(self._keras_model.predict(X.reshape(1, 20, len(feats)), verbose=0)[0][0])
+        return {
+            "device_id": device_id,
+            "fault_probability": prob,
+            "prediction": "Fault" if prob >= 0.5 else "Normal",
+            "confidence": abs(prob - 0.5) * 2.0,
+            "source": "[CLOUD LSTM]",
         }
 
     def predict(self, device_id: str, readings: List[Dict[str, Any]]) -> Dict[str, Any]:
