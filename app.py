@@ -276,7 +276,7 @@ def render_live_telemetry(df: pd.DataFrame, selected_device: str, is_online: boo
         client = VentilatorDashboardClient()
 
     readings = live_df.tail(20).to_dict(orient="records")
-    pred = client.predict(device_id=active_name, readings=readings)
+    pred = client.predict(device_id=active_name, readings=readings, is_live_device=True)
     prob = float(pred.get("fault_probability", 0.0))
     status = "Fault" if prob >= threshold else "Normal"
 
@@ -334,7 +334,12 @@ def render_fault_alert_center(
             return
 
         with st.spinner("Executing neural inference..."):
-            pred = client.predict(device_id=selected_device, readings=readings)
+            csv_dev_id = (
+            str(readings[0]["device_id"]).strip()
+            if readings and isinstance(readings[0], dict) and readings[0].get("device_id")
+            else selected_device
+        )
+        pred = client.predict(device_id=csv_dev_id, readings=readings, is_live_device=st.session_state.get("live_device_connected", False))
 
         prob = float(pred.get("fault_probability", 0.0))
         label = "Fault" if prob >= threshold else "Normal"

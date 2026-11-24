@@ -368,27 +368,46 @@ def _embedded_init_db(db_path: pathlib.Path) -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp TEXT NOT NULL,
                 device_id TEXT NOT NULL,
+                device_status TEXT NOT NULL DEFAULT 'No Live Device (CSV Upload)',
                 fault_probability REAL NOT NULL,
                 prediction TEXT NOT NULL,
                 confidence REAL NOT NULL
             )
             """
         )
+        # Migrate existing table if device_status column wasn't created yet
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(cloud_predictions)").fetchall()]
+        if "device_status" not in cols:
+            conn.execute("ALTER TABLE cloud_predictions ADD COLUMN device_status TEXT NOT NULL DEFAULT 'No Live Device (CSV Upload)'")
         conn.commit()
 
-def _embedded_predict(self, device_id: str, readings: list) -> dict:
+def _embedded_predict(self, device_id: str, readings: list, is_live_device: bool = False) -> dict:
     import json, joblib, numpy as np, pandas as pd, requests
+
+    # Extract actual device_id from CSV readings if caller passed placeholder "NO_LIVE_DEVICE"
+    resolved_device_id = str(device_id or "").strip()
+    if (not resolved_device_id or resolved_device_id == "NO_LIVE_DEVICE") and readings:
+        for row in readings:
+            if isinstance(row, dict) and row.get("device_id") and str(row["device_id"]).strip() not in ("", "None", "nan", "NO_LIVE_DEVICE"):
+                resolved_device_id = str(row["device_id"]).strip()
+                break
+    if not resolved_device_id or resolved_device_id == "NO_LIVE_DEVICE":
+        resolved_device_id = "CSV-UPLOAD-UNIT"
+
+    device_status = "Live Device" if is_live_device else "No Live Device (CSV Upload)"
 
     # 1. Try live FastAPI server first if running locally
     try:
         base = getattr(self, "base_url", "http://127.0.0.1:8000").rstrip("/")
         resp = requests.post(
             f"{base}/predict",
-            json={"device_id": device_id, "readings": readings},
+            json={"device_id": resolved_device_id, "readings": readings},
             timeout=getattr(self, "timeout", 2.0),
         )
         if resp.status_code == 200:
             out = resp.json()
+            out["device_id"] = resolved_device_id
+            out["device_status"] = "Live Device"
             out["source"] = "live"
             return out
     except Exception:
@@ -415,7 +434,6 @@ def _embedded_predict(self, device_id: str, readings: list) -> dict:
     expected_seq = int(self._keras_model.input_shape[1] or 20)
     expected_dim = int(self._keras_model.input_shape[-1])
 
-    # Determine numeric sensor columns expected by scaler
     if self._scaler is not None and hasattr(self._scaler, "feature_names_in_"):
         num_cols = list(self._scaler.feature_names_in_)
     else:
@@ -436,7 +454,6 @@ def _embedded_predict(self, device_id: str, readings: list) -> dict:
     if self._scaler is not None:
         X_num = self._scaler.transform(X_num)
 
-    # Encode categorical hardware model column if encoder exists
     if self._encoder is not None:
         cat_cols = list(self._encoder.feature_names_in_) if hasattr(self._encoder, "feature_names_in_") else ["model"]
         for c in cat_cols:
@@ -450,7 +467,6 @@ def _embedded_predict(self, device_id: str, readings: list) -> dict:
     else:
         X = X_num
 
-    # Pad or trim columns safely if needed to match expected_dim (16)
     if X.shape[1] < expected_dim:
         X = np.hstack([X, np.zeros((X.shape[0], expected_dim - X.shape[1]), dtype="float32")])
     elif X.shape[1] > expected_dim:
@@ -470,14 +486,15 @@ def _embedded_predict(self, device_id: str, readings: list) -> dict:
     _embedded_init_db(db_path)
     with _sqlite3.connect(db_path) as conn:
         conn.execute(
-            "INSERT INTO cloud_predictions (timestamp, device_id, fault_probability, prediction, confidence) VALUES (?, ?, ?, ?, ?)",
-            (ts, device_id, prob, pred_label, confidence),
+            "INSERT INTO cloud_predictions (timestamp, device_id, device_status, fault_probability, prediction, confidence) VALUES (?, ?, ?, ?, ?, ?)",
+            (ts, resolved_device_id, device_status, prob, pred_label, confidence),
         )
         conn.commit()
 
     return {
         "timestamp": ts,
-        "device_id": device_id,
+        "device_id": resolved_device_id,
+        "device_status": device_status,
         "fault_probability": prob,
         "prediction": pred_label,
         "confidence": confidence,
@@ -501,14 +518,14 @@ def _embedded_get_history(self, device_id: str | None = None, limit: int = 100, 
     _embedded_init_db(db_path)
     with _sqlite3.connect(db_path) as conn:
         conn.row_factory = _sqlite3.Row
-        if device_id and str(device_id).lower() not in ("all", "all devices", "none"):
+        if device_id and str(device_id).lower() not in ("all", "all devices", "none", "no_live_device"):
             rows = conn.execute(
-                "SELECT id, timestamp, device_id, fault_probability, prediction, confidence FROM cloud_predictions WHERE device_id = ? ORDER BY id DESC LIMIT ?",
+                "SELECT id, timestamp, device_id, device_status, fault_probability, prediction, confidence FROM cloud_predictions WHERE device_id = ? ORDER BY id DESC LIMIT ?",
                 (device_id, limit),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT id, timestamp, device_id, fault_probability, prediction, confidence FROM cloud_predictions ORDER BY id DESC LIMIT ?",
+                "SELECT id, timestamp, device_id, device_status, fault_probability, prediction, confidence FROM cloud_predictions ORDER BY id DESC LIMIT ?",
                 (limit,),
             ).fetchall()
     records = [dict(r) for r in rows]
