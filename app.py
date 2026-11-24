@@ -155,7 +155,20 @@ def render_sidebar(client: VentilatorDashboardClient, df: pd.DataFrame) -> Dict[
     st.sidebar.subheader("🎛️ Equipment Selection")
 
     device_list = sorted(list(df["device_id"].unique())) if not df.empty else ["VENT-001"]
-    selected_device = st.sidebar.selectbox("Active Ventilator Unit", device_list, index=0)
+    st.sidebar.markdown("---")
+        st.sidebar.markdown("### 🏥 Hardware Model Selector")
+        if "model" in df.columns:
+            avail_models = ["All Models"] + sorted(df["model"].dropna().unique().tolist())
+            selected_model = st.sidebar.selectbox(
+                f"Ventilator Hardware Model ({len(avail_models) - 1} models)",
+                avail_models,
+                index=0,
+            )
+            model_df = df if selected_model == "All Models" else df[df["model"] == selected_model]
+            st.sidebar.caption(f"Showing telemetry across **{len(model_df):,}** records ({selected_model})")
+        else:
+            selected_model = "All Models"
+        selected_device = selected_model
 
     # Threshold slider
     st.sidebar.divider()
@@ -248,7 +261,7 @@ def render_fleet_overview(df: pd.DataFrame, is_online: bool, metrics: Dict[str, 
 # ---------------------------------------------------------------------------
 def render_live_telemetry(df: pd.DataFrame, selected_device: str, is_online: bool):
     badge = '<span class="badge-live">[LIVE API]</span>' if is_online else '<span class="badge-demo">[LIVE TELEMETRY]</span>'
-    st.subheader(f"Patient & Ventilator Dynamics: `{selected_device}`")
+    st.subheader(f"Hardware Model Telemetry Dynamics: `{selected_device}`")
     st.markdown(f"Real-time sensor telemetry traces • Source: {badge}", unsafe_allow_html=True)
 
     dev_df = df[df["device_id"] == selected_device].copy() if not df.empty else pd.DataFrame()
