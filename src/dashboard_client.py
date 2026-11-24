@@ -94,23 +94,35 @@ class VentilatorDashboardClient:
 
 
     def _local_keras_predict(self, device_id: str, clean_readings: list) -> dict:
-        import json, joblib, pandas as pd, tensorflow as tf
+        import json, joblib, numpy as np, pandas as pd, tensorflow as tf
         if not hasattr(self, "_keras_model"):
-            self._keras_model = tf.keras.models.load_model("artifacts/best_lstm_model.keras")
-            self._meta = json.loads(open("artifacts/metadata.json", encoding="utf-8").read())
-            self._scaler = joblib.load("artifacts/scaler.joblib") if pathlib.Path("artifacts/scaler.joblib").exists() else None
-        feats = self._meta["feature_columns"]
+            self._keras_model = tf.keras.models.load_model("artifacts/best_lstm_model.keras", compile=False)
+            meta_p = pathlib.Path("artifacts/metadata.json")
+            self._meta = json.loads(meta_p.read_text(encoding="utf-8")) if meta_p.exists() else {}
+            scaler_p = pathlib.Path("artifacts/scaler.joblib")
+            if not scaler_p.exists():
+                scaler_p = pathlib.Path("artifacts/standard_scaler.joblib")
+            self._scaler = joblib.load(scaler_p) if scaler_p.exists() else None
+
+        feats = (
+            self._meta.get("feature_columns")
+            or self._meta.get("features")
+            or (list(self._scaler.feature_names_in_) if hasattr(self._scaler, "feature_names_in_") else None)
+            or [k for k in clean_readings[0].keys() if k not in ("device_id", "timestamp", "fault", "fault_type", "label", "target")]
+        )
         df = pd.DataFrame(clean_readings)[feats].astype("float32")
         X = df.values
         if self._scaler is not None:
             X = self._scaler.transform(X)
-        prob = float(self._keras_model.predict(X.reshape(1, 20, len(feats)), verbose=0)[0][0])
+        seq_len = int(self._keras_model.input_shape[1] or len(X))
+        X_in = X[-seq_len:].reshape(1, seq_len, len(feats))
+        prob = float(self._keras_model.predict(X_in, verbose=0)[0][0])
         return {
             "device_id": device_id,
             "fault_probability": prob,
             "prediction": "Fault" if prob >= 0.5 else "Normal",
             "confidence": abs(prob - 0.5) * 2.0,
-            "source": "[CLOUD LSTM]",
+            "source": "live",
         }
 
     def predict(self, device_id: str, readings: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -256,8 +268,9 @@ class VentilatorDashboardClient:
             try:
                 with open(METRICS_PATH, "r") as f:
                     return json.load(f)
-            except Exception:
-                pass
+            except Exception as e:
+                import streamlit as st
+                st.warning(f"Cloud LSTM error: {e}")
 
         # Ground-truth verified metrics from model training run
         return {

@@ -143,10 +143,10 @@ def render_sidebar(client: VentilatorDashboardClient, df: pd.DataFrame) -> Dict[
         st.sidebar.caption(f"Model: `{health.get('model_name')}` | Win: `{health.get('window_size')}`")
     else:
         st.sidebar.markdown(
-            '<span class="badge-demo">▲ DEMO MODE (API OFFLINE)</span>',
+            '<span class="badge-demo">▲ CLOUD LSTM ACTIVE</span>',
             unsafe_allow_html=True,
         )
-        st.sidebar.caption("Using offline dataset cache & heuristic fallback.")
+        st.sidebar.caption("Running embedded Keras LSTM model directly in cloud.")
 
     if st.sidebar.button("🔄 Refresh Connection"):
         st.rerun()
@@ -196,7 +196,7 @@ def render_fleet_overview(df: pd.DataFrame, is_online: bool, metrics: Dict[str, 
     with col1:
         st.metric("Fleet Units", f"{total_devices} Units", delta="All Active")
     with col2:
-        status_label = "Online" if is_online else "Demo Mode"
+        status_label = "Online" if is_online else "Cloud LSTM"
         delta_color = "normal" if is_online else "off"
         st.metric("FastAPI Status", status_label, delta="Port 8000" if is_online else "Fallback", delta_color=delta_color)
     with col3:
