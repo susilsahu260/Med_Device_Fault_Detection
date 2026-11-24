@@ -34,7 +34,7 @@ st.set_page_config(
     page_title="PulmoGuard | Ventilator Fault Detection",
     page_icon="🫁",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
 
 CUSTOM_CSS = """
@@ -122,157 +122,8 @@ def render_sidebar(client: VentilatorDashboardClient, df: pd.DataFrame) -> Dict[
     st.sidebar.caption("Intelligent Ventilator Telemetry & Safety")
 
     st.sidebar.divider()
-    st.sidebar.subheader("🔌 Backend Connection")
-    backend_url = st.sidebar.text_input(
-        "API Base URL",
-        value=client.base_url,
-        help="FastAPI REST service endpoint",
-    )
-    if backend_url != client.base_url:
-        client.base_url = backend_url.rstrip("/")
+    api_url = "http://127.0.0.1:8000"
 
-    # Check live health
-    health = client.check_health()
-    is_online = health.get("is_online", False)
-
-    if is_online:
-        st.sidebar.markdown(
-            '<span class="badge-live">● LIVE API CONNECTED</span>',
-            unsafe_allow_html=True,
-        )
-        st.sidebar.caption(f"Model: `{health.get('model_name')}` | Win: `{health.get('window_size')}`")
-    else:
-        st.sidebar.markdown(
-            '<span class="badge-demo">▲ CLOUD LSTM ACTIVE</span>',
-            unsafe_allow_html=True,
-        )
-        st.sidebar.caption("Running embedded Keras LSTM model directly in cloud.")
-
-    if st.sidebar.button("🔄 Refresh Connection"):
-        st.rerun()
-
-    st.sidebar.divider()
-    st.sidebar.subheader("🎛️ Equipment Selection")
-
-    device_list = sorted(list(df["device_id"].unique())) if not df.empty else ["VENT-001"]
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("### 🔌 Live Bedside Telemetry")
-    live_connected = st.session_state.get("live_device_connected", False)
-    if live_connected:
-        selected_device = st.session_state.get("live_device_name", "LIVE-VENT-01")
-        st.sidebar.success(f"Connected: {selected_device}")
-    else:
-        selected_device = "NO_LIVE_DEVICE"
-        st.sidebar.info("No real-time devices are connected.")
-
-    # Threshold slider
-    st.sidebar.divider()
-    st.sidebar.subheader("⚙️ Safety Parameters")
-    fault_threshold = st.sidebar.slider(
-        "Fault Decision Threshold",
-        min_value=0.1,
-        max_value=0.9,
-        value=0.5,
-        step=0.05,
-        help="Class balance threshold used to trigger critical alerts.",
-    )
-
-    return {
-        "is_online": is_online,
-        "health": health,
-        "selected_device": selected_device,
-        "fault_threshold": fault_threshold,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Tab 1: Fleet Status & Overview
-# ---------------------------------------------------------------------------
-def render_fleet_overview(df: pd.DataFrame, is_online: bool, metrics: Dict[str, Any]):
-    st.markdown('<div class="main-title">Ventilator Fleet Surveillance</div>', unsafe_allow_html=True)
-    st.markdown(
-        '<div class="sub-title">Continuous ICU equipment monitoring, anomaly detection, and reliability analytics.</div>',
-        unsafe_allow_html=True,
-    )
-
-    total_devices = df["device_id"].nunique() if not df.empty else 100
-    fault_rows = df[df["failure"] == 1] if "failure" in df.columns else pd.DataFrame()
-    fleet_fault_rate = (len(fault_rows) / len(df) * 100.0) if not df.empty else 30.0
-
-    # KPI Row
-    col1, col2, col3, col4, col5 = st.columns(5)
-    with col1:
-        st.metric("Fleet Units", f"{total_devices} Units", delta="All Active")
-    with col2:
-        status_label = "Online" if is_online else "Cloud LSTM"
-        delta_color = "normal" if is_online else "off"
-        st.metric("FastAPI Status", status_label, delta="Port 8000" if is_online else "Fallback", delta_color=delta_color)
-    with col3:
-        st.metric("Fault Rate (Historical)", f"{fleet_fault_rate:.1f}%", delta="-0.4% baseline", delta_color="inverse")
-    with col4:
-        st.metric("Model PR-AUC", f"{metrics.get('pr_auc', 0.9978):.4f}", delta="Optimal Clinical")
-    with col5:
-        st.metric("Test F1-Score", f"{metrics.get('f1_score', 0.9939):.4f}", delta="Target ≥ 0.98")
-
-    st.write("")
-
-    # Fleet Distribution chart
-    c1, c2 = st.columns([1.5, 1])
-    with c1:
-        st.subheader("Equipment Fault Categories across Fleet")
-        if "fault_type" in df.columns:
-            fault_counts = df["fault_type"].value_counts().reset_index()
-            fault_counts.columns = ["Fault Category", "Telemetry Count"]
-            fig = px.bar(
-                fault_counts,
-                x="Fault Category",
-                y="Telemetry Count",
-                color="Fault Category",
-                color_discrete_sequence=px.colors.qualitative.Safe,
-            )
-            fig.update_layout(showlegend=False, height=320, margin=dict(l=20, r=20, t=20, b=20))
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("Fault type column not available in dataset.")
-
-    with c2:
-        st.subheader("Device Hardware Models")
-        if "device_model" in df.columns:
-            model_counts = df["device_model"].value_counts().reset_index()
-            model_counts.columns = ["Model", "Count"]
-            fig_pie = px.pie(
-                model_counts,
-                names="Model",
-                values="Count",
-                hole=0.45,
-                color_discrete_sequence=px.colors.qualitative.Prism,
-            )
-            fig_pie.update_layout(height=320, margin=dict(l=20, r=20, t=20, b=20))
-            st.plotly_chart(fig_pie, use_container_width=True)
-
-
-# ---------------------------------------------------------------------------
-# Tab 2: Live Telemetry Charts (Plotly)
-# ---------------------------------------------------------------------------
-def render_live_telemetry(df: pd.DataFrame, selected_device: str, is_online: bool = False, client=None, threshold: float = 0.50) -> None:
-    st.markdown("## 📡 Live Bedside Ventilator Telemetry & Real-Time Diagnostics")
-
-    if not is_online and not st.session_state.get("live_device_connected", False):
-        st.info("🔌 **No real-time devices are connected.** Connect a real-time device to see live telemetry waveforms and real-time Fault/Normal diagnostics.")
-        return
-
-    live_df = st.session_state.get("live_feed_df", df.tail(20)).copy()
-    active_name = st.session_state.get("live_device_name", selected_device)
-    st.success(f"🟢 Real-Time Device Connected: **{active_name}** ({len(live_df)} telemetry samples)")
-
-    plot_cols = [c for c in ["airway_pressure", "tidal_volume", "respiratory_rate", "spo2", "fio2", "peep", "temp", "pressure", "voltage", "current"] if c in live_df.columns]
-    if plot_cols:
-        st.markdown("### 📈 Real-Time Sensor Waveforms")
-        st.line_chart(live_df[plot_cols[:4]].reset_index(drop=True))
-
-    st.markdown("### 🧠 Real-Time LSTM Fault Classification")
-    if client is None or isinstance(client, bool):
-        from src.dashboard_client import VentilatorDashboardClient
         client = VentilatorDashboardClient()
 
     readings = live_df.tail(20).to_dict(orient="records")
