@@ -415,11 +415,15 @@ def _embedded_predict(self, device_id: str, readings: list) -> dict:
             scaler_p = pathlib.Path("artifacts/standard_scaler.joblib")
         self._scaler = joblib.load(scaler_p) if scaler_p.exists() else None
 
+    expected_seq = int(self._keras_model.input_shape[1] or 20)
+    expected_dim = int(self._keras_model.input_shape[-1])
+
     feats = (
         self._meta.get("feature_columns")
         or self._meta.get("features")
+        or self._meta.get("sensor_columns")
         or (list(self._scaler.feature_names_in_) if hasattr(self._scaler, "feature_names_in_") else None)
-        or list(clean_readings[0].keys())
+        or [k for k in clean_readings[0].keys()]
     )
     df = pd.DataFrame(clean_readings)
     for col in feats:
@@ -427,13 +431,22 @@ def _embedded_predict(self, device_id: str, readings: list) -> dict:
             df[col] = 0.0
     X = df[feats].astype("float32").values
     if self._scaler is not None:
-        X = self._scaler.transform(X)
+        try:
+            X = self._scaler.transform(X)
+        except Exception:
+            if hasattr(self._scaler, "n_features_in_") and X.shape[1] != self._scaler.n_features_in_:
+                X = X[:, : int(self._scaler.n_features_in_)]
+                X = self._scaler.transform(X)
 
-    seq_len = int(self._keras_model.input_shape[1] or len(X))
-    if len(X) < seq_len:
-        pad = np.repeat(X[:1], seq_len - len(X), axis=0)
+    if X.shape[1] > expected_dim:
+        X = X[:, :expected_dim]
+    elif X.shape[1] < expected_dim:
+        X = np.pad(X, ((0, 0), (0, expected_dim - X.shape[1])), mode="constant")
+
+    if len(X) < expected_seq:
+        pad = np.repeat(X[:1], expected_seq - len(X), axis=0)
         X = np.vstack([pad, X])
-    X_in = X[-seq_len:].reshape(1, seq_len, len(feats))
+    X_in = X[-expected_seq:].reshape(1, expected_seq, expected_dim)
 
     prob = float(self._keras_model.predict(X_in, verbose=0)[0][0])
     pred_label = "Fault" if prob >= 0.5 else "Normal"
