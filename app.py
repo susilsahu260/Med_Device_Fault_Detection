@@ -156,19 +156,19 @@ def render_sidebar(client: VentilatorDashboardClient, df: pd.DataFrame) -> Dict[
 
     device_list = sorted(list(df["device_id"].unique())) if not df.empty else ["VENT-001"]
     st.sidebar.markdown("---")
-        st.sidebar.markdown("### 🏥 Hardware Model Selector")
-        if "model" in df.columns:
-            avail_models = ["All Models"] + sorted(df["model"].dropna().unique().tolist())
-            selected_model = st.sidebar.selectbox(
-                f"Ventilator Hardware Model ({len(avail_models) - 1} models)",
-                avail_models,
-                index=0,
-            )
-            model_df = df if selected_model == "All Models" else df[df["model"] == selected_model]
-            st.sidebar.caption(f"Showing telemetry across **{len(model_df):,}** records ({selected_model})")
-        else:
-            selected_model = "All Models"
-        selected_device = selected_model
+    st.sidebar.markdown("### 🏥 Hardware Model Selector")
+    if "model" in df.columns:
+        avail_models = ["All Models"] + sorted(df["model"].dropna().unique().tolist())
+        selected_model = st.sidebar.selectbox(
+            f"Ventilator Hardware Model ({len(avail_models) - 1} models)",
+            avail_models,
+            index=0,
+        )
+        model_df = df if selected_model == "All Models" else df[df["model"] == selected_model]
+        st.sidebar.caption(f"Showing telemetry across **{len(model_df):,}** records ({selected_model})")
+    else:
+        selected_model = "All Models"
+    selected_device = selected_model
 
     # Threshold slider
     st.sidebar.divider()
