@@ -163,7 +163,7 @@ def render_sidebar(client: VentilatorDashboardClient, df: pd.DataFrame) -> Dict[
         st.sidebar.success(f"Connected: {selected_device}")
     else:
         selected_device = "NO_LIVE_DEVICE"
-        st.sidebar.info("No live devices connected.")
+        st.sidebar.info("No real-time devices are connected.")
 
     # Threshold slider
     st.sidebar.divider()
@@ -254,50 +254,24 @@ def render_fleet_overview(df: pd.DataFrame, is_online: bool, metrics: Dict[str, 
 # ---------------------------------------------------------------------------
 # Tab 2: Live Telemetry Charts (Plotly)
 # ---------------------------------------------------------------------------
-def render_live_telemetry(df: pd.DataFrame, selected_device: str, client=None, threshold: float = 0.50) -> None:
+def render_live_telemetry(df: pd.DataFrame, selected_device: str, is_online: bool = False, client=None, threshold: float = 0.50) -> None:
     st.markdown("## 📡 Live Bedside Ventilator Telemetry & Real-Time Diagnostics")
 
-    col_conn1, col_conn2 = st.columns([2, 1])
-    with col_conn1:
-        uploaded_live = st.file_uploader(
-            "Connect Live Device Feed (Upload Telemetry CSV Window)",
-            type=["csv"],
-            key="live_tab_uploader",
-            help="Upload a live ventilator telemetry CSV window to connect a bedside feed and run real-time LSTM fault detection.",
-        )
-    with col_conn2:
-        st.write("")
-        st.write("")
-        if st.button("🔌 Disconnect Live Feed", use_container_width=True):
-            st.session_state["live_device_connected"] = False
-            st.session_state.pop("live_feed_df", None)
-            st.session_state.pop("live_device_name", None)
-            st.rerun()
-
-    if uploaded_live is not None:
-        live_df = pd.read_csv(uploaded_live)
-        dev_name = str(live_df["device_id"].iloc[0]) if "device_id" in live_df.columns and len(live_df) > 0 else uploaded_live.name.replace(".csv", "")
-        st.session_state["live_device_connected"] = True
-        st.session_state["live_feed_df"] = live_df
-        st.session_state["live_device_name"] = dev_name
-
-    if not st.session_state.get("live_device_connected", False) or "live_feed_df" not in st.session_state:
-        st.warning("⚠️ No live devices are connected. Connect a live bedside telemetry stream or upload a device CSV feed above to view real-time waveforms and Fault/Normal diagnostics.")
+    if not is_online and not st.session_state.get("live_device_connected", False):
+        st.info("🔌 **No real-time devices are connected.** Connect a real-time device to see live telemetry waveforms and real-time Fault/Normal diagnostics.")
         return
 
-    live_df = st.session_state["live_feed_df"].copy()
-    active_name = st.session_state.get("live_device_name", "LIVE-VENT-01")
-    st.success(f"🟢 Live Device Connected: **{active_name}** ({len(live_df)} telemetry samples)")
+    live_df = st.session_state.get("live_feed_df", df.tail(20)).copy()
+    active_name = st.session_state.get("live_device_name", selected_device)
+    st.success(f"🟢 Real-Time Device Connected: **{active_name}** ({len(live_df)} telemetry samples)")
 
-    # Plot live sensor waveforms
     plot_cols = [c for c in ["airway_pressure", "tidal_volume", "respiratory_rate", "spo2", "fio2", "peep", "temp", "pressure", "voltage", "current"] if c in live_df.columns]
     if plot_cols:
         st.markdown("### 📈 Real-Time Sensor Waveforms")
         st.line_chart(live_df[plot_cols[:4]].reset_index(drop=True))
 
-    # Run real-time Keras LSTM Fault vs Normal classification right inside Live Telemetry
     st.markdown("### 🧠 Real-Time LSTM Fault Classification")
-    if client is None:
+    if client is None or isinstance(client, bool):
         from src.dashboard_client import VentilatorDashboardClient
         client = VentilatorDashboardClient()
 
@@ -315,7 +289,6 @@ def render_live_telemetry(df: pd.DataFrame, selected_device: str, client=None, t
         st.error(f"🚨 CRITICAL FAULT DETECTED on {active_name} (p = {prob:.4f}) — Immediate biomedical inspection required.")
     else:
         st.success(f"✅ VENTILATOR STABLE & OPERATIONAL on {active_name} (p = {prob:.4f}) — All parameters within safe clinical limits.")
-
 
 def render_fault_alert_center(
     client: VentilatorDashboardClient, selected_device: str, threshold: float
