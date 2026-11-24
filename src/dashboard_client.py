@@ -394,53 +394,72 @@ def _embedded_predict(self, device_id: str, readings: list) -> dict:
     except Exception:
         pass
 
-    # 2. Load exact artifacts (model + scaler + metadata) once
+    # 2. Load exact model, scaler, encoder, and metadata from artifacts/
     if not hasattr(self, "_keras_model") or self._keras_model is None:
         import tensorflow as tf
         self._keras_model = tf.keras.models.load_model("artifacts/best_lstm_model.keras", compile=False)
         meta_p = pathlib.Path("artifacts/metadata.json")
         self._meta = json.loads(meta_p.read_text(encoding="utf-8")) if meta_p.exists() else {}
 
-        # Find any .joblib / .pkl scaler inside artifacts/
-        scaler_candidates = sorted(pathlib.Path("artifacts").glob("*scaler*")) + sorted(pathlib.Path("artifacts").glob("*.joblib"))
-        self._scaler = joblib.load(scaler_candidates[0]) if scaler_candidates else None
+        self._scaler = None
+        self._encoder = None
+        for f in sorted(pathlib.Path("artifacts").glob("*.joblib")):
+            obj = joblib.load(f)
+            name_low = f.name.lower()
+            if "scaler" in name_low:
+                self._scaler = obj
+            elif "enc" in name_low:
+                self._encoder = obj
 
     df_raw = pd.DataFrame(readings)
-
-    # Use project preprocessing pipeline if available
-    try:
-        from src.preprocessing import engineer_features
-        df_proc = engineer_features(df_raw.copy())
-    except Exception:
-        df_proc = df_raw.copy()
-
-    # Resolve exact feature columns in exact training order
-    feats = None
-    for key in ("feature_columns", "features", "feature_names", "input_features", "columns", "sensor_columns"):
-        if key in self._meta and isinstance(self._meta[key], list) and len(self._meta[key]) > 0:
-            feats = self._meta[key]
-            break
-    if feats is None and self._scaler is not None and hasattr(self._scaler, "feature_names_in_"):
-        feats = list(self._scaler.feature_names_in_)
-    if feats is None:
-        drop_cols = {"device_id", "timestamp", "time", "fault", "fault_type", "fault_label", "label", "target", "model", "hardware_model"}
-        feats = [c for c in df_proc.columns if c.lower() not in drop_cols]
-
-    for col in feats:
-        if col not in df_proc.columns:
-            df_proc[col] = 0.0
-
-    X = df_proc[feats].astype("float32").values
-
-    if self._scaler is not None:
-        X = self._scaler.transform(X)
-
-    expected_seq = int(self._keras_model.input_shape[1] or len(X))
+    expected_seq = int(self._keras_model.input_shape[1] or 20)
     expected_dim = int(self._keras_model.input_shape[-1])
+
+    # Determine numeric sensor columns expected by scaler
+    if self._scaler is not None and hasattr(self._scaler, "feature_names_in_"):
+        num_cols = list(self._scaler.feature_names_in_)
+    else:
+        num_cols = (
+            self._meta.get("numeric_features")
+            or self._meta.get("sensor_columns")
+            or self._meta.get("feature_columns")
+            or [c for c in df_raw.columns if c not in ("device_id", "timestamp", "model", "hardware_model", "fault", "fault_type", "label", "target")]
+        )
+        if self._scaler is not None and hasattr(self._scaler, "n_features_in_"):
+            num_cols = num_cols[: int(self._scaler.n_features_in_)]
+
+    for col in num_cols:
+        if col not in df_raw.columns:
+            df_raw[col] = 0.0
+
+    X_num = df_raw[num_cols].astype("float32").values
+    if self._scaler is not None:
+        X_num = self._scaler.transform(X_num)
+
+    # Encode categorical hardware model column if encoder exists
+    if self._encoder is not None:
+        cat_cols = list(self._encoder.feature_names_in_) if hasattr(self._encoder, "feature_names_in_") else ["model"]
+        for c in cat_cols:
+            if c not in df_raw.columns:
+                default_cat = self._encoder.categories_[0][0] if hasattr(self._encoder, "categories_") else "VENT-X100"
+                df_raw[c] = default_cat
+        X_cat = self._encoder.transform(df_raw[cat_cols])
+        if hasattr(X_cat, "toarray"):
+            X_cat = X_cat.toarray()
+        X = np.hstack([X_num, X_cat.astype("float32")])
+    else:
+        X = X_num
+
+    # Pad or trim columns safely if needed to match expected_dim (16)
+    if X.shape[1] < expected_dim:
+        X = np.hstack([X, np.zeros((X.shape[0], expected_dim - X.shape[1]), dtype="float32")])
+    elif X.shape[1] > expected_dim:
+        X = X[:, :expected_dim]
+
     if len(X) < expected_seq:
         pad = np.repeat(X[:1], expected_seq - len(X), axis=0)
         X = np.vstack([pad, X])
-    X_in = X[-expected_seq:, :expected_dim].reshape(1, expected_seq, expected_dim)
+    X_in = X[-expected_seq:].reshape(1, expected_seq, expected_dim)
 
     prob = float(self._keras_model.predict(X_in, verbose=0)[0][0])
     pred_label = "Fault" if prob >= 0.5 else "Normal"
