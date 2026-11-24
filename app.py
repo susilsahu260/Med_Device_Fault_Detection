@@ -156,19 +156,14 @@ def render_sidebar(client: VentilatorDashboardClient, df: pd.DataFrame) -> Dict[
 
     device_list = sorted(list(df["device_id"].unique())) if not df.empty else ["VENT-001"]
     st.sidebar.markdown("---")
-    st.sidebar.markdown("### 🏥 Hardware Model Selector")
-    if "model" in df.columns:
-        avail_models = ["All Models"] + sorted(df["model"].dropna().unique().tolist())
-        selected_model = st.sidebar.selectbox(
-            f"Ventilator Hardware Model ({len(avail_models) - 1} models)",
-            avail_models,
-            index=0,
-        )
-        model_df = df if selected_model == "All Models" else df[df["model"] == selected_model]
-        st.sidebar.caption(f"Showing telemetry across **{len(model_df):,}** records ({selected_model})")
+    st.sidebar.markdown("### 🔌 Live Bedside Telemetry")
+    live_connected = st.session_state.get("live_device_connected", False)
+    if live_connected:
+        selected_device = st.session_state.get("live_device_name", "LIVE-VENT-01")
+        st.sidebar.success(f"Connected: {selected_device}")
     else:
-        selected_model = "All Models"
-    selected_device = selected_model
+        selected_device = "NO_LIVE_DEVICE"
+        st.sidebar.info("No live devices connected.")
 
     # Threshold slider
     st.sidebar.divider()
@@ -259,141 +254,69 @@ def render_fleet_overview(df: pd.DataFrame, is_online: bool, metrics: Dict[str, 
 # ---------------------------------------------------------------------------
 # Tab 2: Live Telemetry Charts (Plotly)
 # ---------------------------------------------------------------------------
-def render_live_telemetry(df: pd.DataFrame, selected_device: str, is_online: bool):
-    badge = '<span class="badge-live">[LIVE API]</span>' if is_online else '<span class="badge-demo">[LIVE TELEMETRY]</span>'
-    st.subheader(f"Hardware Model Telemetry Dynamics: `{selected_device}`")
-    st.markdown(f"Real-time sensor telemetry traces • Source: {badge}", unsafe_allow_html=True)
+def render_live_telemetry(df: pd.DataFrame, selected_device: str, client=None, threshold: float = 0.50) -> None:
+    st.markdown("## 📡 Live Bedside Ventilator Telemetry & Real-Time Diagnostics")
 
-    dev_df = df[df["device_id"] == selected_device].copy() if not df.empty else pd.DataFrame()
-    if dev_df.empty:
-        st.warning(f"No records found for device {selected_device}.")
+    col_conn1, col_conn2 = st.columns([2, 1])
+    with col_conn1:
+        uploaded_live = st.file_uploader(
+            "Connect Live Device Feed (Upload Telemetry CSV Window)",
+            type=["csv"],
+            key="live_tab_uploader",
+            help="Upload a live ventilator telemetry CSV window to connect a bedside feed and run real-time LSTM fault detection.",
+        )
+    with col_conn2:
+        st.write("")
+        st.write("")
+        if st.button("🔌 Disconnect Live Feed", use_container_width=True):
+            st.session_state["live_device_connected"] = False
+            st.session_state.pop("live_feed_df", None)
+            st.session_state.pop("live_device_name", None)
+            st.rerun()
+
+    if uploaded_live is not None:
+        live_df = pd.read_csv(uploaded_live)
+        dev_name = str(live_df["device_id"].iloc[0]) if "device_id" in live_df.columns and len(live_df) > 0 else uploaded_live.name.replace(".csv", "")
+        st.session_state["live_device_connected"] = True
+        st.session_state["live_feed_df"] = live_df
+        st.session_state["live_device_name"] = dev_name
+
+    if not st.session_state.get("live_device_connected", False) or "live_feed_df" not in st.session_state:
+        st.warning("⚠️ No live devices are connected. Connect a live bedside telemetry stream or upload a device CSV feed above to view real-time waveforms and Fault/Normal diagnostics.")
         return
 
-    # Create step index if timestamp is missing or uniform
-    dev_df = dev_df.reset_index(drop=True)
-    dev_df["step_index"] = dev_df.index
+    live_df = st.session_state["live_feed_df"].copy()
+    active_name = st.session_state.get("live_device_name", "LIVE-VENT-01")
+    st.success(f"🟢 Live Device Connected: **{active_name}** ({len(live_df)} telemetry samples)")
 
-    # 1. Pressure Chart (Airway vs Inlet) with normal clinical bands
-    fig_press = go.Figure()
-    fig_press.add_trace(go.Scatter(
-        x=dev_df["step_index"],
-        y=dev_df["airway_pressure_cmH2O"],
-        name="Airway Pressure (cmH2O)",
-        line=dict(color="#2563eb", width=2.5),
-    ))
-    fig_press.add_trace(go.Scatter(
-        x=dev_df["step_index"],
-        y=dev_df["inlet_pressure_kPa"],
-        name="Inlet Pressure (kPa)",
-        line=dict(color="#0891b2", width=2, dash="dot"),
-    ))
-    # Normal safe clinical zone for airway pressure: 10 - 35 cmH2O
-    fig_press.add_hrect(
-        y0=10.0, y1=35.0,
-        fillcolor="rgba(34, 197, 94, 0.12)",
-        line_width=0,
-        annotation_text="Safe Clinical Pressure Margin [10-35 cmH2O]",
-        annotation_position="top left",
-    )
-    fig_press.update_layout(
-        title="1. Respiratory Pressure Waveform vs. Inlet Pressure",
-        xaxis_title="Sequential Observation Step",
-        yaxis_title="Pressure (cmH2O / kPa)",
-        height=320,
-        margin=dict(l=30, r=30, t=40, b=30),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-    )
-    st.plotly_chart(fig_press, use_container_width=True)
+    # Plot live sensor waveforms
+    plot_cols = [c for c in ["airway_pressure", "tidal_volume", "respiratory_rate", "spo2", "fio2", "peep", "temp", "pressure", "voltage", "current"] if c in live_df.columns]
+    if plot_cols:
+        st.markdown("### 📈 Real-Time Sensor Waveforms")
+        st.line_chart(live_df[plot_cols[:4]].reset_index(drop=True))
 
-    # 2. Airflow & Oxygen Concentration
-    col1, col2 = st.columns(2)
-    with col1:
-        fig_flow = go.Figure()
-        fig_flow.add_trace(go.Scatter(
-            x=dev_df["step_index"],
-            y=dev_df["airflow_L_min"],
-            name="Airflow (L/min)",
-            line=dict(color="#10b981", width=2),
-        ))
-        fig_flow.update_layout(
-            title="2. Delivered Airflow (L/min)",
-            xaxis_title="Step",
-            yaxis_title="Flow Rate",
-            height=280,
-            margin=dict(l=20, r=20, t=35, b=20),
-        )
-        st.plotly_chart(fig_flow, use_container_width=True)
+    # Run real-time Keras LSTM Fault vs Normal classification right inside Live Telemetry
+    st.markdown("### 🧠 Real-Time LSTM Fault Classification")
+    if client is None:
+        from src.dashboard_client import VentilatorDashboardClient
+        client = VentilatorDashboardClient()
 
-    with col2:
-        fig_o2 = go.Figure()
-        fig_o2.add_trace(go.Scatter(
-            x=dev_df["step_index"],
-            y=dev_df["oxygen_concentration_pct"],
-            name="FiO2 (%)",
-            line=dict(color="#f59e0b", width=2),
-        ))
-        fig_o2.update_layout(
-            title="3. Oxygen Concentration FiO2 (%)",
-            xaxis_title="Step",
-            yaxis_title="FiO2 %",
-            height=280,
-            margin=dict(l=20, r=20, t=35, b=20),
-        )
-        st.plotly_chart(fig_o2, use_container_width=True)
+    readings = live_df.tail(20).to_dict(orient="records")
+    pred = client.predict(device_id=active_name, readings=readings)
+    prob = float(pred.get("fault_probability", 0.0))
+    status = "Fault" if prob >= threshold else "Normal"
 
-    # 3. Hardware Thermal & Mechanical Health
-    col3, col4 = st.columns(2)
-    with col3:
-        fig_mech = go.Figure()
-        fig_mech.add_trace(go.Scatter(
-            x=dev_df["step_index"],
-            y=dev_df["vibration_mm_s"],
-            name="Vibration (mm/s)",
-            line=dict(color="#dc2626", width=2),
-        ))
-        fig_mech.add_trace(go.Scatter(
-            x=dev_df["step_index"],
-            y=dev_df["motor_current_A"],
-            name="Motor Current (A)",
-            line=dict(color="#9333ea", width=2, dash="dash"),
-        ))
-        fig_mech.update_layout(
-            title="4. Mechanical Vibration & Motor Load",
-            xaxis_title="Step",
-            yaxis_title="Metric Amplitude",
-            height=280,
-            margin=dict(l=20, r=20, t=35, b=20),
-            legend=dict(orientation="h", y=1.02),
-        )
-        st.plotly_chart(fig_mech, use_container_width=True)
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Predicted Status", status)
+    m2.metric("Fault Probability", f"{prob * 100:.2f}%")
+    m3.metric("Decision Threshold", f"{threshold:.2f}")
 
-    with col4:
-        fig_therm = go.Figure()
-        fig_therm.add_trace(go.Scatter(
-            x=dev_df["step_index"],
-            y=dev_df["internal_temperature_C"],
-            name="Internal Temp (°C)",
-            line=dict(color="#ea580c", width=2),
-        ))
-        fig_therm.add_hrect(
-            y0=50.0, y1=100.0,
-            fillcolor="rgba(239, 68, 68, 0.12)",
-            line_width=0,
-            annotation_text="Overheating Zone (>50°C)",
-        )
-        fig_therm.update_layout(
-            title="5. Internal Operating Temperature (°C)",
-            xaxis_title="Step",
-            yaxis_title="Temperature (°C)",
-            height=280,
-            margin=dict(l=20, r=20, t=35, b=20),
-        )
-        st.plotly_chart(fig_therm, use_container_width=True)
+    if status == "Fault":
+        st.error(f"🚨 CRITICAL FAULT DETECTED on {active_name} (p = {prob:.4f}) — Immediate biomedical inspection required.")
+    else:
+        st.success(f"✅ VENTILATOR STABLE & OPERATIONAL on {active_name} (p = {prob:.4f}) — All parameters within safe clinical limits.")
 
 
-# ---------------------------------------------------------------------------
-# Tab 3: Fault Detection & Alert Center
-# ---------------------------------------------------------------------------
 def render_fault_alert_center(
     client: VentilatorDashboardClient, selected_device: str, threshold: float
 ):
