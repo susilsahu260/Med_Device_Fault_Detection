@@ -471,11 +471,14 @@ def _embedded_predict(self, device_id: str, readings: list) -> dict:
         "source": "live",
     }
 
-def _embedded_get_history(self, limit: int = 100) -> list:
+def _embedded_get_history(self, device_id: str | None = None, limit: int = 100, **kwargs) -> list:
     import requests
     try:
         base = getattr(self, "base_url", "http://127.0.0.1:8000").rstrip("/")
-        resp = requests.get(f"{base}/predictions/history", params={"limit": limit}, timeout=getattr(self, "timeout", 2.0))
+        params = {"limit": limit}
+        if device_id:
+            params["device_id"] = device_id
+        resp = requests.get(f"{base}/predictions/history", params=params, timeout=getattr(self, "timeout", 2.0))
         if resp.status_code == 200:
             return resp.json()
     except Exception:
@@ -485,10 +488,16 @@ def _embedded_get_history(self, limit: int = 100) -> list:
     _embedded_init_db(db_path)
     with _sqlite3.connect(db_path) as conn:
         conn.row_factory = _sqlite3.Row
-        rows = conn.execute(
-            "SELECT id, timestamp, device_id, fault_probability, prediction, confidence FROM cloud_predictions ORDER BY id DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
+        if device_id and str(device_id).lower() not in ("all", "all devices", "none"):
+            rows = conn.execute(
+                "SELECT id, timestamp, device_id, fault_probability, prediction, confidence FROM cloud_predictions WHERE device_id = ? ORDER BY id DESC LIMIT ?",
+                (device_id, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT id, timestamp, device_id, fault_probability, prediction, confidence FROM cloud_predictions ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
     return [dict(r) for r in rows]
 
 VentilatorDashboardClient.predict = _embedded_predict
