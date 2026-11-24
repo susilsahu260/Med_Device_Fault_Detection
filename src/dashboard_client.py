@@ -1,3 +1,4 @@
+from __future__ import annotations
 import pathlib
 """Client library and resilient demo fallback provider for the Ventilator Dashboard.
 
@@ -6,7 +7,6 @@ GET /predictions/history). Automatically activates [DEMO DATA] mode if the
 backend is unavailable, ensuring the Streamlit application never crashes.
 """
 
-from __future__ import annotations
 
 import json
 import logging
