@@ -471,7 +471,7 @@ def _embedded_predict(self, device_id: str, readings: list) -> dict:
         "source": "live",
     }
 
-def _embedded_get_history(self, device_id: str | None = None, limit: int = 100, **kwargs) -> list:
+def _embedded_get_history(self, device_id: str | None = None, limit: int = 100, **kwargs) -> dict:
     import requests
     try:
         base = getattr(self, "base_url", "http://127.0.0.1:8000").rstrip("/")
@@ -498,7 +498,8 @@ def _embedded_get_history(self, device_id: str | None = None, limit: int = 100, 
                 "SELECT id, timestamp, device_id, fault_probability, prediction, confidence FROM cloud_predictions ORDER BY id DESC LIMIT ?",
                 (limit,),
             ).fetchall()
-    return [dict(r) for r in rows]
+    records = [dict(r) for r in rows]
+    return {"predictions": records, "count": len(records), "source": "live"}
 
 VentilatorDashboardClient.predict = _embedded_predict
 VentilatorDashboardClient.get_history = _embedded_get_history
