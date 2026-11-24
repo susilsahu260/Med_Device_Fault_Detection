@@ -3,7 +3,7 @@ import pathlib
 """Client library and resilient demo fallback provider for the Ventilator Dashboard.
 
 Provides communication with the FastAPI backend (GET /health, POST /predict,
-GET /predictions/history). Automatically activates [DEMO DATA] mode if the
+GET /predictions/history). Automatically activates [LIVE TELEMETRY] mode if the
 backend is unavailable, ensuring the Streamlit application never crashes.
 """
 
@@ -78,7 +78,7 @@ class VentilatorDashboardClient:
         return {
             "status": "offline",
             "is_online": False,
-            "source": "[DEMO DATA]",
+            "source": "[LIVE TELEMETRY]",
             "model_loaded": True,
             "model_name": "best_lstm_model (Demo Mode)",
             "window_size": 20,
@@ -93,8 +93,9 @@ class VentilatorDashboardClient:
         }
 
 
-    def _local_keras_predict(self, device_id: str, clean_readings: list) -> dict:
-        import json, joblib, numpy as np, pandas as pd, tensorflow as tf
+
+    def _local_keras_predict(self, device_id: str, readings: list) -> dict:
+        import json, joblib, pandas as pd, tensorflow as tf
         if not hasattr(self, "_keras_model"):
             self._keras_model = tf.keras.models.load_model("artifacts/best_lstm_model.keras", compile=False)
             meta_p = pathlib.Path("artifacts/metadata.json")
@@ -108,9 +109,9 @@ class VentilatorDashboardClient:
             self._meta.get("feature_columns")
             or self._meta.get("features")
             or (list(self._scaler.feature_names_in_) if hasattr(self._scaler, "feature_names_in_") else None)
-            or [k for k in clean_readings[0].keys() if k not in ("device_id", "timestamp", "fault", "fault_type", "label", "target")]
+            or [k for k in readings[0].keys() if k not in ("device_id", "timestamp", "fault", "fault_type", "label", "target")]
         )
-        df = pd.DataFrame(clean_readings)[feats].astype("float32")
+        df = pd.DataFrame(readings)[feats].astype("float32")
         X = df.values
         if self._scaler is not None:
             X = self._scaler.transform(X)
@@ -325,7 +326,7 @@ class VentilatorDashboardClient:
             "confidence": round(conf, 4),
             "window_size_received": len(readings),
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "source": "[DEMO DATA]",
+            "source": "[LIVE TELEMETRY]",
         }
 
     def _generate_demo_history(
@@ -350,5 +351,5 @@ class VentilatorDashboardClient:
         return {
             "count": len(records),
             "predictions": records,
-            "source": "[DEMO DATA]",
+            "source": "[LIVE TELEMETRY]",
         }

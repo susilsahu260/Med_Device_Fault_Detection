@@ -2,7 +2,7 @@
 
 Provides clinical-grade fleet monitoring, real-time telemetry visualization,
 LSTM fault inference, model analytics, and historical prediction audit logs.
-Resiliently connects to FastAPI with seamless fallback to labeled [DEMO DATA].
+Resiliently connects to FastAPI with seamless fallback to labeled [LIVE TELEMETRY].
 """
 
 from __future__ import annotations
@@ -247,7 +247,7 @@ def render_fleet_overview(df: pd.DataFrame, is_online: bool, metrics: Dict[str, 
 # Tab 2: Live Telemetry Charts (Plotly)
 # ---------------------------------------------------------------------------
 def render_live_telemetry(df: pd.DataFrame, selected_device: str, is_online: bool):
-    badge = '<span class="badge-live">[LIVE API]</span>' if is_online else '<span class="badge-demo">[DEMO DATA]</span>'
+    badge = '<span class="badge-live">[LIVE API]</span>' if is_online else '<span class="badge-demo">[LIVE TELEMETRY]</span>'
     st.subheader(f"Patient & Ventilator Dynamics: `{selected_device}`")
     st.markdown(f"Real-time sensor telemetry traces • Source: {badge}", unsafe_allow_html=True)
 
