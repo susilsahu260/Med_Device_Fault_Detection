@@ -406,7 +406,7 @@ def render_fault_alert_center(
         if uploaded_file is not None:
             user_df = pd.read_csv(uploaded_file)
             if len(user_df) >= 20:
-                readings = user_df.head(20).to_dict(orient="records")
+                readings = user_df.drop(columns=["timestamp", "device_id", "failure", "fault_type"], errors="ignore").tail(20).to_dict(orient="records")
                 st.success(f"Parsed {len(readings)} sensor readings from uploaded CSV.")
             else:
                 st.error("Uploaded CSV must contain at least 20 rows.")

@@ -97,7 +97,8 @@ class VentilatorDashboardClient:
         Falls back gracefully to deterministic demo inference if the API is offline.
         """
         url = f"{self.base_url}/predict"
-        payload = {"device_id": device_id, "readings": readings}
+        forbidden = {"timestamp", "device_id", "failure", "fault_type"}
+        payload = {"device_id": device_id, "readings": [{k: v for k, v in r.items() if k not in forbidden} for r in readings[-20:]]}
 
         try:
             resp = requests.post(url, json=payload, timeout=self.timeout)
