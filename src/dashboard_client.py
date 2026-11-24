@@ -379,22 +379,12 @@ def _embedded_init_db(db_path: pathlib.Path) -> None:
 def _embedded_predict(self, device_id: str, readings: list) -> dict:
     import json, joblib, numpy as np, pandas as pd, requests
 
-    allowed = {
-        "airway_pressure", "tidal_volume", "respiratory_rate", "fio2", "peep",
-        "minute_ventilation", "peak_inspiratory_pressure", "plateau_pressure",
-        "spo2", "etco2", "heart_rate", "temp", "voltage", "current", "pressure"
-    }
-    clean_readings = [
-        {k: float(v) for k, v in row.items() if k in allowed}
-        for row in readings
-    ]
-
     # 1. Try live FastAPI server first if running locally
     try:
         base = getattr(self, "base_url", "http://127.0.0.1:8000").rstrip("/")
         resp = requests.post(
             f"{base}/predict",
-            json={"device_id": device_id, "readings": clean_readings},
+            json={"device_id": device_id, "readings": readings},
             timeout=getattr(self, "timeout", 2.0),
         )
         if resp.status_code == 200:
@@ -404,49 +394,53 @@ def _embedded_predict(self, device_id: str, readings: list) -> dict:
     except Exception:
         pass
 
-    # 2. Run real embedded Keras LSTM model directly
+    # 2. Load exact artifacts (model + scaler + metadata) once
     if not hasattr(self, "_keras_model") or self._keras_model is None:
         import tensorflow as tf
         self._keras_model = tf.keras.models.load_model("artifacts/best_lstm_model.keras", compile=False)
         meta_p = pathlib.Path("artifacts/metadata.json")
         self._meta = json.loads(meta_p.read_text(encoding="utf-8")) if meta_p.exists() else {}
-        scaler_p = pathlib.Path("artifacts/scaler.joblib")
-        if not scaler_p.exists():
-            scaler_p = pathlib.Path("artifacts/standard_scaler.joblib")
-        self._scaler = joblib.load(scaler_p) if scaler_p.exists() else None
 
-    expected_seq = int(self._keras_model.input_shape[1] or 20)
-    expected_dim = int(self._keras_model.input_shape[-1])
+        # Find any .joblib / .pkl scaler inside artifacts/
+        scaler_candidates = sorted(pathlib.Path("artifacts").glob("*scaler*")) + sorted(pathlib.Path("artifacts").glob("*.joblib"))
+        self._scaler = joblib.load(scaler_candidates[0]) if scaler_candidates else None
 
-    feats = (
-        self._meta.get("feature_columns")
-        or self._meta.get("features")
-        or self._meta.get("sensor_columns")
-        or (list(self._scaler.feature_names_in_) if hasattr(self._scaler, "feature_names_in_") else None)
-        or [k for k in clean_readings[0].keys()]
-    )
-    df = pd.DataFrame(clean_readings)
+    df_raw = pd.DataFrame(readings)
+
+    # Use project preprocessing pipeline if available
+    try:
+        from src.preprocessing import engineer_features
+        df_proc = engineer_features(df_raw.copy())
+    except Exception:
+        df_proc = df_raw.copy()
+
+    # Resolve exact feature columns in exact training order
+    feats = None
+    for key in ("feature_columns", "features", "feature_names", "input_features", "columns", "sensor_columns"):
+        if key in self._meta and isinstance(self._meta[key], list) and len(self._meta[key]) > 0:
+            feats = self._meta[key]
+            break
+    if feats is None and self._scaler is not None and hasattr(self._scaler, "feature_names_in_"):
+        feats = list(self._scaler.feature_names_in_)
+    if feats is None:
+        drop_cols = {"device_id", "timestamp", "time", "fault", "fault_type", "fault_label", "label", "target", "model", "hardware_model"}
+        feats = [c for c in df_proc.columns if c.lower() not in drop_cols]
+
     for col in feats:
-        if col not in df.columns:
-            df[col] = 0.0
-    X = df[feats].astype("float32").values
+        if col not in df_proc.columns:
+            df_proc[col] = 0.0
+
+    X = df_proc[feats].astype("float32").values
+
     if self._scaler is not None:
-        try:
-            X = self._scaler.transform(X)
-        except Exception:
-            if hasattr(self._scaler, "n_features_in_") and X.shape[1] != self._scaler.n_features_in_:
-                X = X[:, : int(self._scaler.n_features_in_)]
-                X = self._scaler.transform(X)
+        X = self._scaler.transform(X)
 
-    if X.shape[1] > expected_dim:
-        X = X[:, :expected_dim]
-    elif X.shape[1] < expected_dim:
-        X = np.pad(X, ((0, 0), (0, expected_dim - X.shape[1])), mode="constant")
-
+    expected_seq = int(self._keras_model.input_shape[1] or len(X))
+    expected_dim = int(self._keras_model.input_shape[-1])
     if len(X) < expected_seq:
         pad = np.repeat(X[:1], expected_seq - len(X), axis=0)
         X = np.vstack([pad, X])
-    X_in = X[-expected_seq:].reshape(1, expected_seq, expected_dim)
+    X_in = X[-expected_seq:, :expected_dim].reshape(1, expected_seq, expected_dim)
 
     prob = float(self._keras_model.predict(X_in, verbose=0)[0][0])
     pred_label = "Fault" if prob >= 0.5 else "Normal"
